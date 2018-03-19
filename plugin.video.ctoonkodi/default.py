@@ -1,133 +1,113 @@
 # -*- coding: utf-8 -*-
-import sys, urllib, urlparse, re, requests
-import xbmc,xbmcaddon,xbmcgui,xbmcplugin,xbmcvfs
-
+import sys, urllib, urlparse, re, requests, ast
+import xbmc,xbmcgui,xbmcplugin
 
 __handle__ = int(sys.argv[1])
 
-BASE_URL    = 'https://ctoon.party' # .stream and .network domains redirect to this.
+ADDON_VERSION = '0.2.0'
 
+BASE_URL = 'https://ctoon.party' # .stream and .network domains redirect to this.
 
-def view_shows(params):
-    r = open_url(BASE_URL)
+SEASONS_PROPERTY = 'ctoonkodi.seasons_episodes'
+
+#===================================================================================		
     
-    html = r.text
-    cards = re.findall(r'<div class=.*?pmd-card.*?href="(/.+?)".*?src="(.+?jpg)".*?alt="(.+?)"', html, re.DOTALL)
-    listing = []
+def view_shows():
+    r = open_url(BASE_URL)
+    cards = re.findall(r'<div class=.*?pmd-card.*?href="(/.+?)".*?src="(.+?jpg)".*?alt="(.+?)"', r.text, re.DOTALL)
     for show_url, img_url, show_name in cards:
-        listing.append( make_list_item('SEASONS', BASE_URL + show_url, show_name, BASE_URL + img_url) )
-        
-    xbmcplugin.addDirectoryItems(__handle__, listing, len(listing))
+        url_params = {'view': 'seasons', 'url': BASE_URL + show_url, 'thumbnail': BASE_URL + img_url}
+        url = build_url(url_params)
+        listitem = xbmcgui.ListItem(show_name)
+        listitem.setArt({'poster': BASE_URL + img_url, 'fanart': BASE_URL + img_url})
+        xbmcplugin.addDirectoryItem(__handle__, url, listitem, isFolder=True)
     xbmcplugin.endOfDirectory(__handle__)
     xbmc.executebuiltin('Container.SetViewMode(500)') # Estuary skin, grid mode.
 
     
 def view_seasons(params):
-    r = open_url(params['URL'])
-    
+    r = open_url(params['url'][0])
     html = r.text
     seasons = re.findall(r'false"> (.+?) <i class', html, re.DOTALL)
-    listing = []
+    seasons_episodes = dict()
     for season_name in seasons:
-        listing.append( make_list_item('EPISODES', params['URL'], season_name, params['THUMB']) )
-        
-    xbmcplugin.addDirectoryItems(__handle__, listing, len(listing))
+        ep_list = re.findall(season_name + r'.*?"row">(.*?)</div>\s*?</div>\s*?</div>', html, re.DOTALL)
+        episodes = re.findall( r'href="(/.*?)">(.*?)</a>', ep_list[0], re.DOTALL )
+        seasons_episodes[season_name] = episodes               
+        url_params = {'view': 'episodes', 'season': season_name,
+        'url': params['url'][0], 'thumbnail': params['thumbnail'][0]}
+        url = build_url(url_params)
+        listitem = xbmcgui.ListItem(season_name)
+        listitem.setArt({'poster': params['thumbnail'][0]})
+        xbmcplugin.addDirectoryItem(__handle__, url, listitem, isFolder=True)
     xbmcplugin.endOfDirectory(__handle__)
-        
+    # Store 'seasons_episodes' dict as a Window property (persistent memory data).
+    window = xbmcgui.Window( xbmcgui.getCurrentWindowId() )
+    window.clearProperty(SEASONS_PROPERTY)
+    window.setProperty(SEASONS_PROPERTY, str(seasons_episodes))
+    
     
 def view_episodes(params):
-    # Silly XBMC API that doesn't allow persistent data, now we have to waste
-    # another GET request for the same page to get data for a different screen.
-    r = open_url(params['URL'])
+    current_window = xbmcgui.getCurrentWindowId()
+    se_ep_data = xbmcgui.Window(current_window).getProperty(SEASONS_PROPERTY)
+    if se_ep_data:
+        seasons_episodes = ast.literal_eval( se_ep_data )
+        episodes = seasons_episodes[ params['season'][0] ]
+    else:
+        # In case we're coming in from a favourited season the property won't be set.
+        r = open_url(params['url'][0])
+        pattern = params['season'][0] + r'.*?"row">(.*?)</div>\s*?</div>\s*?</div>'
+        ep_list = re.findall(pattern, r.text, re.DOTALL)
+        episodes = re.findall( r'href="(/.*?)">(.*?)</a>', ep_list[0], re.DOTALL )    
+    xbmcgui.Window(current_window).clearProperty(SEASONS_PROPERTY)
     
-    html = r.text
-    ep_list = re.findall(params['NAME'] + r'.*?"row">(.*?)</div>\s*?</div>\s*?</div>', html, re.DOTALL)
-    episodes = re.findall( r'href="(/.*?)">(.*?)</a>', ep_list[0], re.DOTALL )
-    
-    listing = []
     for episode_url, episode_name in episodes:
-        listing.append( make_list_item('MEDIA', BASE_URL + episode_url, \
-        	                               episode_name.replace('&amp;', '&'), params['THUMB']) )
-        
-    xbmcplugin.addDirectoryItems(__handle__, listing, len(listing))
+        url_params = {'view': 'media', 'url': BASE_URL + episode_url,
+                      'thumbnail': params['thumbnail'][0]}
+        url = build_url(url_params)
+        listitem = xbmcgui.ListItem( episode_name.replace('&amp;', '&') )
+        listitem.setArt( {'poster': params['thumbnail'][0]} )
+        xbmcplugin.addDirectoryItem(__handle__, url, listitem, isFolder=True)
     xbmcplugin.endOfDirectory(__handle__)
     
     
 def view_media(params):
-    r = open_url(params['URL'])
-    
-    html = r.text
-    media_list = re.findall(r'label="(.*?p)".*?src="(.*?webm)"', html, re.DOTALL)
-    
-    listing = []
-    for media_quality, media_url in media_list:        
-        listing.append( make_list_item('PLAY', media_url, media_quality, params['THUMB']) )
-        
-    xbmcplugin.addDirectoryItems(__handle__, listing, len(listing))
+    r = open_url(params['url'][0])
+    media_list = re.findall(r'label="(.*?p)".*?src="(.*?webm)"', r.text, re.DOTALL)
+    for media_quality, media_url in media_list:
+        listitem = xbmcgui.ListItem(media_quality)
+        listitem.setArt({'poster': params['thumbnail'][0]})
+        listitem.setProperty('IsPlayable', 'true')
+        listitem.setPath(media_url)
+        xbmcplugin.addDirectoryItem(__handle__, media_url, listitem, isFolder=False) 
     xbmcplugin.endOfDirectory(__handle__)
     
+#==================================================================================	=	  
 
-#===================================================================================
+def build_url(query):
+    return sys.argv[0] + '?' + urllib.urlencode(query)
 
 
 def open_url(url):
-    r = requests.get(url, headers={'User-Agent' : 'CTOON Kodi/0.1.0'})
+    r = requests.get(url, headers={'User-Agent' : 'CTOON Kodi/' + ADDON_VERSION})
     if r.status_code != requests.codes.ok:
         raise Exception("Could not connect to CTOON")
-        #xbmcplugin.endOfDirectory(__handle__) # Is this really needed?
     return r
-
-    
-def make_list_item(mode, url, name, thumbnail):
-    item_url=sys.argv[0]+"?mode="+mode+"&url="+urllib.quote_plus(url)+"&name="+urllib.quote_plus(name)+"&thumb="+urllib.quote_plus(thumbnail)
-    is_folder = False
-    if mode=='SEASONS' or mode=='EPISODES':
-        li=xbmcgui.ListItem(name, iconImage="DefaultFolder.png", thumbnailImage=thumbnail)
-        is_folder = True
-        if mode=='SEASONS':
-            li.setArt({'thumb' : thumbnail, 'posterbanner' : thumbnail, 'fanart' : thumbnail})
-    elif mode=='MEDIA' or mode=='PLAY':
-        li=xbmcgui.ListItem(name, iconImage="DefaultVideo.png", thumbnailImage=thumbnail)
-        li.setInfo(type="Video", infoLabels={"Title": name})
-        if mode=='PLAY':
-            li.setProperty('IsPlayable', 'true')
-            li.setPath(url)
-        else:
-            is_folder=True
-    return (item_url, li, is_folder)
-    
-
-def play_url(params):
-    li = xbmcgui.ListItem(path=params['URL'])
-    li.setProperty('IsPlayable', 'true')
-    li.setPath(params['URL'])
-    xbmcplugin.setResolvedUrl(__handle__, True, listitem=li) # Play the thing.
-
-    
-def get_params():
-    temp = urlparse.parse_qs(sys.argv[2][1:])
-    if len(temp)>1:
-        params = {
-            'MODE' : temp['mode'][0],
-            'URL'  : urllib.unquote_plus(temp['url'][0]),
-            'NAME' : urllib.unquote_plus(temp['name'][0]),
-            'THUMB': urllib.unquote_plus(temp['thumb'][0])
-        }
-        return params
-    else:
-        return { 'MODE' : 'SHOWS' }
-    
     
 #===================================================================================
 
+### Entry point ###
 
-params = get_params()
+params = urlparse.parse_qs(sys.argv[2][1:])
+view = params.get('view', None)
 
-actions = {
-    'SHOWS' : view_shows,
-    'SEASONS' : view_seasons,
-    'EPISODES' : view_episodes,
-    'MEDIA' : view_media,
-    'PLAY' : play_url
-}
-actions[ params['MODE'] ]( params )
+if not view:
+    view_shows()
+elif view[0] == 'seasons':
+    view_seasons(params)
+elif view[0] == 'episodes':
+    view_episodes(params)
+elif view[0] == 'media':
+    view_media(params)
+else:
+    view_shows()
