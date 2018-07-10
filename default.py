@@ -148,17 +148,15 @@ def viewEpisodes( params ):
     global __handle__
     xbmcplugin.setContent( __handle__, 'episodes' )
 
-    episodes = None
+    episodes = [ ]
 
     allSeasons = getWindowProperty( DATA_PROPERTY )
     if allSeasons:
         episodes = allSeasons[ params['seasonKey'][0] ]
     else:
         # In case we're coming in from a favourited season the property won't be set.
-        r = ctoonGET( params['short_name'][0] )
-        if r:
-            data = json.loads( r.text )
-            episodes = data['seasons'][ params['seasonKey'][0] ]
+        data = ctoonGET( params['short_name'][0] )
+        episodes = data['seasons'][ params['seasonKey'][0] ]
     clearWindowProperty( DATA_PROPERTY )
 
     itemList = [ ]
@@ -236,7 +234,7 @@ def viewMedia( params ):
     for quality in episodeData['files']['webm']:
         mediaUrl = BASE_URL + episodeData['files']['webm'][quality]
 
-        item = xbmcgui.ListItem( quality )
+        item = xbmcgui.ListItem( itemLabel ) # Else Kodi overwrites the item name in the list.
         item.setArt( { 'icon': coverUrl, 'thumb': coverUrl, 'poster': coverUrl } )
         item.setInfo( 'video', episodeInfo )
         item.setPath( mediaUrl )
