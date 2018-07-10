@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import sys
-import json
 import requests
+import json
 from urllib import urlencode
 from urlparse import parse_qs
 from ast import literal_eval
@@ -11,10 +11,13 @@ import xbmcgui
 import xbmcplugin
 
 
-ADDON_VERSION = '0.3.0'
+ADDON_VERSION = '0.3.1'
 
 
 # Changelog:
+#   0.3.1
+#       - Minor fixes.
+#
 #   0.3.0
 #       - Added support for the ctoon web API.
 #       - Code cleanup and improvement.
@@ -22,7 +25,7 @@ ADDON_VERSION = '0.3.0'
 #   0.2.0
 #       - Initial release.
 #
-#   TODO: 
+#   TODO:
 #       - Allow VTT subtitle loading, and convert to SRT:
 #         # VTT to SRT conversion code from Jansen A. Simanullang:
 #         # https://github.com/jansenicus/vtt-to-srt.py/blob/master/vtt-to-srt.py#L29-L32
@@ -31,19 +34,24 @@ ADDON_VERSION = '0.3.0'
 #         tempSRT = re.sub( r'WEBVTT[\s]*', '', tempSRT )
 #         tempSRT = re.sub( r'^\d+\n', '', tempSRT )
 #         srtData = re.sub( r'\n\d+\n', '\n', tempSRT )
-#  
 #         # etc. etc., load subtitle into the Player like this:
 #         https://github.com/covenantkodi/script.module.covenant/blob/master/lib/resources/lib/modules/player.py#L339-L355
 #
-#       - Add some simple 'unwatched \ watched' marking so users can tell what episodes they've watched.
-#         (That is, so you don't get the error message when you cancel the 'Select Quality' dialog.)
+#       - Add some metadata database cache:
+#           - Check if episodes are unwatched \ watched, setting the ListItem 'overlay' infolabel with a checkmark.
+#           - Cache season and episode thumbnails and descriptions from the show IMDB ID.
+#           - Handle specials and movies.
+#           Use a metadata addon or manually access the TVDB api:
+#           TVDB_API_KEY = '0HVVMAMIQQNCTWV7' # An exclusive TVDB API key for CToon Kodi, for later use.
 
 
 __handle__ = int( sys.argv[1] )
 
 BASE_URL = 'https://ctoon.party'
 
-PROPERTY = 'ctoonkodi.property'
+USER_AGENT = 'CTOONKodi/' + ADDON_VERSION + ' (JSON API; +https://github.com/dokoab/plugin.video.ctoonkodi)'
+
+DATA_PROPERTY = 'ctoonkodi.property'
 
 #===================================================================================
 
@@ -51,81 +59,88 @@ def viewShows():
     global __handle__
     xbmcplugin.setContent( __handle__, 'episodes' ) # Estuary skin has better layout for this than for 'tvshows' content.
 
-    r = ctoonGET()
-    if r:
-        data = json.loads( r.text )
-        itemList = [ ]
+    data = ctoonGET()
+    itemList = [ ]
 
-        for showData in data:
-            coverUrl = BASE_URL + showData['cover']
-            showName = showData['name']
-
-            item = xbmcgui.ListItem( showName )
-            item.setArt( { 'icon': coverUrl, 'poster': coverUrl, 'fanart': coverUrl } )
-            item.setInfo( 'video', infoLabels = {
-                                       'tvshowtitle': showName,
-                                       'plot': showData['description'],
-                                       'description': showName,
-                                       'mediatype': 'episode'                                       
-                                   }
-                        )
-
-            urlParams = {
-                'view': 'SEASONS',
-                'name': showName,
-                'short_name': showData['short_name'],
-                'thumbnail': coverUrl
+    for showData in data:
+        coverUrl = BASE_URL + showData['cover']
+        showName = showData['name']
+        showIMDB = showData['links']['imdb'].split( '/' )[-1] # Show IMDB ID ('tt#######'), useful for getting metadata.
+        showPlot = showData['description']
+        
+        item = xbmcgui.ListItem( showName )
+        item.setArt(
+            {
+                'icon': coverUrl,
+                'thumb': coverUrl,
+                'poster': coverUrl,
+                'fanart': coverUrl
             }
-            url = buildUrl( urlParams )
+        )
+        item.setInfo( 'video', infoLabels = {
+                                   'tvshowtitle': showName,
+                                   'plot': showPlot,
+                                   'mediatype': 'episode' # 'episode' mediatype looks better on Estuary than 'tvshow'.
+                               }
+                    )
 
-            itemList.append( ( url, item, True ) )
+        urlParams = {
+            'view': 'SEASONS',
+            'name': showName,
+            'short_name': showData['short_name'],
+            'plot': showPlot,
+            'thumbnail': coverUrl
+        }
+        url = buildUrl( urlParams )
 
-        xbmcplugin.addDirectoryItems( __handle__, itemList )
+        itemList.append( ( url, item, True ) )
+
+    xbmcplugin.addDirectoryItems( __handle__, itemList )
     xbmcplugin.endOfDirectory( __handle__ )
 
 
 def viewSeasons( params ):
     global __handle__
-    xbmcplugin.setContent( __handle__, 'episodes' )
+    xbmcplugin.setContent( __handle__, 'seasons' )
 
-    r = ctoonGET( params['short_name'][0] )
-    if r:
-        data = json.loads( r.text )
-        itemList = [ ]
+    data = ctoonGET( params['short_name'][0] )
+    itemList = [ ]
 
-        coverUrl = params['thumbnail'][0]
+    showName = params['name'][0]
+    showPlot = params['plot'][0]
+    coverUrl = params['thumbnail'][0]
 
-        # Sort seasons and put the 'Extra' and 'Movie' seasons at the end of the list.
-        orderedKeys = sorted( data['seasons'].keys(), key = lambda k: k if k.lower().startswith( 'season' ) else 'z' )
-        
-        for seasonKey in orderedKeys:
-            item = xbmcgui.ListItem( seasonKey )
-            item.setArt( { 'icon': coverUrl, 'poster': coverUrl } )
-            seasonNumber = data['seasons'][seasonKey][0]['season']
-            seasonNumber = int( seasonNumber ) if seasonNumber.isdigit() else 0
-            item.setInfo( 'video', infoLabels = {
-                                       'originaltitle': params['name'],
-                                       'tvshowtitle': params['name'],
-                                       'season': seasonNumber,
-                                       'mediatype': 'season'
-                                   }
-                        )
+    # Sort seasons and put the 'Extra' and 'Movie' seasons at the end of the list.
+    orderedKeys = sorted( data['seasons'].keys(), key = lambda k: k if k.lower().startswith( 'season' ) else 'z' )
 
-            urlParams = {
-                'view': 'EPISODES',
-                'name': params['name'][0],
-                'short_name': params['short_name'][0],
-                'seasonKey': seasonKey,
-                'seasonNumber': seasonNumber,
-                'thumbnail': coverUrl
-            }
-            url = buildUrl( urlParams )
+    for seasonKey in orderedKeys:
+        item = xbmcgui.ListItem( seasonKey )
+        item.setArt( { 'thumb': coverUrl, 'poster': coverUrl } )
+        seasonNumber = data['seasons'][seasonKey][0]['season']
+        seasonNumber = int( seasonNumber ) if seasonNumber.isdigit() else 0
+        item.setInfo( 'video', infoLabels = {
+                                   'tvshowtitle': params['name'],
+                                   'plot': showPlot,
+                                   'season': seasonNumber,
+                                   'mediatype': 'season'
+                               }
+                    )
 
-            itemList.append( ( url, item, True ) )
+        urlParams = {
+            'view': 'EPISODES',
+            'name': params['name'][0],
+            'short_name': params['short_name'][0],
+            'seasonKey': seasonKey,
+            'seasonNumber': seasonNumber,
+            'thumbnail': coverUrl
+        }
+        url = buildUrl( urlParams )
 
-        clearWindowProperty( PROPERTY )
-        setWindowProperty( PROPERTY, data['seasons'] ) # Pass on to the 'viewEpisodes' function, to save off a GET request.
-        xbmcplugin.addDirectoryItems( __handle__, itemList )
+        itemList.append( ( url, item, True ) )
+
+    clearWindowProperty( DATA_PROPERTY )
+    setWindowProperty( DATA_PROPERTY, data['seasons'] ) # Pass on to the 'viewEpisodes' function, to save off a GET request.
+    xbmcplugin.addDirectoryItems( __handle__, itemList )
     xbmcplugin.endOfDirectory( __handle__ )
 
 
@@ -135,7 +150,7 @@ def viewEpisodes( params ):
 
     episodes = None
 
-    allSeasons = getWindowProperty( PROPERTY )
+    allSeasons = getWindowProperty( DATA_PROPERTY )
     if allSeasons:
         episodes = allSeasons[ params['seasonKey'][0] ]
     else:
@@ -144,7 +159,7 @@ def viewEpisodes( params ):
         if r:
             data = json.loads( r.text )
             episodes = data['seasons'][ params['seasonKey'][0] ]
-    clearWindowProperty( PROPERTY )
+    clearWindowProperty( DATA_PROPERTY )
 
     itemList = [ ]
     dateLength = len( 'yyyy-mm-dd' )
@@ -152,9 +167,8 @@ def viewEpisodes( params ):
     seasonNumber = params['seasonNumber'][0]
     seasonLabel = ( seasonNumber + 'x' ) if seasonNumber != '0' else ''
     showName = params['name'][0]
-    
+
     genericInfo = {
-        'originaltitle': showName,
         'tvshowtitle': showName,
         'season': int( seasonNumber ),
         'episode': -1,
@@ -172,10 +186,10 @@ def viewEpisodes( params ):
             # Since it's a single episode, at this point it's easy
             # to get the episode description, thumbnail, subtitle etc.
             # from a metadata service.
-        
-        label = seasonLabel + label + ' ' + episodeData['title']
+
+        label = seasonLabel + label + ' ' + episodeData['title'] if seasonLabel else episodeData['title']
         airdate = episodeData['published_date'][:dateLength]
-        
+
         episodeInfo = genericInfo.copy()
         episodeInfo.update(
             {
@@ -187,10 +201,10 @@ def viewEpisodes( params ):
             }
         )
         item = xbmcgui.ListItem( label )
-        item.setArt( { 'icon': coverUrl, 'poster': coverUrl } )
+        item.setArt( { 'icon': coverUrl, 'thumb': coverUrl, 'poster': coverUrl } )
         item.setInfo( 'video', episodeInfo )
         item.setProperty( 'IsPlayable', 'true' ) # Allows the checkmark to be placed on watched episodes.
-                
+
         urlParams = {
            'view': 'MEDIA',
            'apiEpisode': params['short_name'][0] + '/' + str( episodeData['id'] ),
@@ -209,41 +223,42 @@ def viewEpisodes( params ):
 def viewMedia( params ):
     global __handle__
 
-    r = ctoonGET( params['apiEpisode'][0] )
-    if r:
-        episodeData = json.loads( r.text )['episode']
-        
-        itemLabel = params['itemLabel'][0]
-        episodeInfo = literal_eval( params['infoLabels'][0] )
-        coverUrl = params['thumbnail'][0]
-        
-        itemList = [ ]
-        listOrder = { '720p': 0, '1080p': 1, '480p': 2, '240p': 3 } # Use the same media order as the HTML source.
-        
-        for quality in episodeData['files']['webm']:
-            mediaUrl = BASE_URL + episodeData['files']['webm'][quality]
-            
-            item = xbmcgui.ListItem( quality )
-            item.setArt( { 'icon': coverUrl, 'poster': coverUrl } )
-            item.setInfo( 'video', episodeInfo )
-            item.setPath( mediaUrl )
-            item.setMimeType( 'video/webm' )
-            item.setProperty( 'IsPlayable', 'true' )
-            item.setProperty( '_tempKey', quality if quality.endswith( 'p' ) else quality + 'p' )
+    data = ctoonGET( params['apiEpisode'][0] )
+    episodeData = data['episode']
 
-            itemList.append( item )
+    itemLabel = params['itemLabel'][0]
+    episodeInfo = literal_eval( params['infoLabels'][0] )
+    coverUrl = params['thumbnail'][0]
 
-        itemList = sorted( itemList, key = lambda item: listOrder.get( item.getProperty( '_tempKey' ), 4 ) )
-        index = xbmcgui.Dialog().select(
-            'Select Quality',
-            [ item.getProperty( '_tempKey' ) for item in itemList ],
-            useDetails = True
-        )
-        if index >= 0:
-            xbmcplugin.setResolvedUrl( __handle__, True, listitem = itemList[index] )
-            #xbmc.Player().play( item = mediaUrl, listitem = itemList[index] ) # Alternative play method.
-        else:
-            pass
+    itemList = [ ]
+    listOrder = { '720': 0, '1080': 1, '480': 2, '240': 3 } # Use the same media order as the HTML source.
+
+    for quality in episodeData['files']['webm']:
+        mediaUrl = BASE_URL + episodeData['files']['webm'][quality]
+
+        item = xbmcgui.ListItem( quality )
+        item.setArt( { 'icon': coverUrl, 'thumb': coverUrl, 'poster': coverUrl } )
+        item.setInfo( 'video', episodeInfo )
+        item.setPath( mediaUrl )
+        item.setMimeType( 'video/webm' )
+        item.setProperty( 'IsPlayable', 'true' )
+        item.setProperty( '_tempKey', quality.strip( 'p' ) )
+
+        itemList.append( item )
+
+    itemList = sorted( itemList, key = lambda item: listOrder.get( item.getProperty( '_tempKey' ), 4 ) )
+    index = xbmcgui.Dialog().select(
+        'Select Quality',
+        [ item.getProperty( '_tempKey' ) for item in itemList ],
+        useDetails = True
+    )
+    if index >= 0:
+        xbmcplugin.setResolvedUrl( __handle__, True, listitem = itemList[index] )
+        # Alternative playing method, to be used if something else needs to be done afterwards
+        # like auto-loading subtitles etc. Such a thing can't be done with 'setResolvedUrl()'.
+        #xbmc.Player().play( item = mediaUrl, listitem = itemList[index] )
+    else:
+        pass
 
 #==================================================================================	=
 
@@ -251,23 +266,22 @@ def buildUrl( query ):
     return sys.argv[0] + '?' + urlencode( { k: unicode( v ).encode( 'utf-8' ) for k, v in query.iteritems() } )
 
 
-def ctoonGET( apiLocation = '' ):
-    userAgent = 'CTOONKodi/' + ADDON_VERSION + ' (JSON API; +https://github.com/dokoab/ctoonkodi)'
+def ctoonGET( apiLocation = '' ):    
     try:
         r = requests.get(
             BASE_URL + '/api/' + apiLocation,
-            headers = { 'User-Agent': userAgent },
+            headers = { 'User-Agent': USER_AGENT },
             timeout = 15 # Seconds.
         )
         if r.status_code != requests.codes.ok:
             raise Exception( 'Could not connect to CTOON' )
         else:
-            return r
+            return r.json()
     except requests.exceptions.Timeout:
         raise Exception( 'Request to CTOON timed out' )
     return None
 
-
+    
 def getWindowProperty( prop ):
     window = xbmcgui.Window( xbmcgui.getCurrentWindowId() )
     data = window.getProperty( prop )
